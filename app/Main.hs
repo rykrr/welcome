@@ -129,7 +129,9 @@ welcomeScreen window = loop
             drawBox Nothing Nothing
             overlay botWindow OverlayReplace
             overlay topWindow OverlayReplace
-
+        
+        closeWindow topWindow
+        closeWindow botWindow
         render
 
     drawGlyphAt y x glyph = moveCursor y x >> drawGlyph glyph
