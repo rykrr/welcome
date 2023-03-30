@@ -6,6 +6,8 @@ import UI.NCurses
 import qualified Data.Text as T
 import Data.Text (Text)
 
+import Data.Maybe (fromMaybe)
+
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import System.Process
 import Debug.Trace
@@ -16,8 +18,6 @@ import GHC.Integer (divInteger)
 import GHC.Num.Integer (integerFromInt)
 
 import System.Posix.Signals
-
-
 
 main :: IO ()
 main = do
@@ -33,14 +33,16 @@ welcomeScreen window = loop
   where
     loop = do
         renderWelcomeScreen window
-        handler <- handleEvent window handlers
+        handler <- handleEvent window handlers 10
         handler
 
     handlers = [
-        ((EventSpecialKey $ KeyFunction 2), \_ -> notImplemented window >> loop),
-        ((EventSpecialKey $ KeyFunction 12), \_ -> restart >> loop),
-        --((EventSpecialKey $ KeyFunction 10), \_ -> return ()),
-        (EventResized, \_ -> loop)]
+         (Just $ EventSpecialKey $ KeyFunction 2, \_ -> notImplemented window >> loop)
+       , (Just $ EventSpecialKey $ KeyFunction 12, \_ -> restart >> loop)
+       , (Just $ EventSpecialKey $ KeyFunction 10, \_ -> return ())
+       , (Just EventResized, \_ -> loop)
+       , (Nothing, \_ -> loop)
+       ]
 
     restart :: Curses ()
     restart = liftIO $ readProcess "/sbin/reboot" [] [] >> return ()
@@ -65,21 +67,32 @@ welcomeScreen window = loop
     renderWelcomeScreen window = do
         -- Collect Information
         uname <- liftIO getUname
-        memGiB <- liftIO getMemoryGibibytes
-        cpuNames <- liftIO getCpuInfo
-        interfaces <- liftIO getInterfaces
+        memGiB <- liftIO (decimalTrunc 2 . show <$> getMemoryGibibytes)
+        cpuNames <- liftIO getCpuNames
+        interfaces <- liftIO (filter (not.isLoopback) <$> getInterfaces)
+        productName <- liftIO getProductName
+
+        let productText = case productName of
+                            Nothing -> [""]
+                            Just name -> ["", name, ""]
+
+        issue <- liftIO $ maybeReadText "/etc/welcome"
+        let issueText = case issue of
+                           Nothing -> []
+                           Just text -> formatIssue text interfaces ++ [""]
 
         -- Format information into human readable text
-        let addrText = enumerateAddresses $ filter (not . isLoopback) interfaces
-            memText = T.pack $ show (round_ memGiB 3) ++ " GiB Memory"
+        let addrText = enumerateAddresses interfaces
+            memText = [T.pack $ memGiB ++ " GiB Memory"]
 
         -- Format information into lines
-        let infoLines = [uname] ++ [T.pack ""] ++ cpuNames ++ [memText]
-            addrLines = map (\i -> T.pack (fst i ++ ": " ++ snd i)) addrText
+        let infoLines = [uname] ++ productText ++ cpuNames ++ memText
+            addrLines = issueText ++ map (\i -> fst i <> ": " <> snd i) addrText
 
         -- Background colours (ident numbers are arbitrary)
-        accentColour <- newColorID ColorBlack ColorYellow 2
-        normalColour <- newColorID ColorWhite ColorBlack 3
+        normalColour <- newColorID ColorWhite ColorBlack 2
+        accentColour <- newColorID ColorBlack ColorYellow 3
+        accentColour' <- newColorID ColorWhite ColorYellow 4
 
         updateWindow window $ do
             (height, width) <- windowSize
@@ -99,10 +112,21 @@ welcomeScreen window = loop
             let powerstr = "<F12> Restart"
             moveCursor (height-bottomOffset) (width - ((toInteger $ length powerstr) + 2))
             drawString powerstr
+            drawSplitBox normalColour accentColour'
 
         render
 
-    blank = (Glyph ' ' [])
+    blank = Glyph ' ' []
+
+    formatIssue :: Text -> [Interface] -> [Text]
+    formatIssue text interfaces = do
+        let address = fromMaybe "<No Address>" $ getFirstAddress interfaces
+            address' = fst . T.break ('/'==) $ address
+        T.lines $ T.replace "%a" address' text
+      where
+        getFirstAddress [] = Nothing
+        getFirstAddress ((Interface _ []):next) = getFirstAddress next
+        getFirstAddress ((Interface _ (addr:_)):_) = Just addr
 
     baseHeight, baseWidth, bottomOffset :: Integer
     baseHeight = 2
@@ -120,16 +144,33 @@ welcomeScreen window = loop
             drawText line
         return ()
 
-handleEvent :: Window -> [(Event, Event -> Curses ())] -> Curses (Curses ())
-handleEvent w handlers = loop where
+drawSplitBox :: ColorID -> ColorID -> Update ()
+drawSplitBox topColour bottomColour = do
+    (height, width) <- windowSize
+    let halfHeight = height // 2
+
+    setColor bottomColour
+    drawBox Nothing Nothing
+    setColor topColour
+    drawLineH_ 0 0 width
+    drawLineV_ 0 1 (halfHeight-1)
+    drawLineV_ (width-1) 1 (halfHeight-1)
+    drawGlyphAt 0 0 glyphCornerUL
+    drawGlyphAt 0 (width-1) glyphCornerUR
+  where
+    drawGlyphAt y x glyph = moveCursor y x >> drawGlyph glyph
+    drawLineH_ y x x' = moveCursor y x >> drawLineH Nothing x'
+    drawLineV_ x y y' = moveCursor y x >> drawLineV Nothing y'
+    blank = Just $ Glyph ' ' []
+
+
+handleEvent :: Window -> [(Maybe Event, Event -> Curses ())] -> Integer -> Curses (Curses ())
+handleEvent window handlers timeout = loop where
     loop = do
-        ev <- getEvent w Nothing
-        case ev of
+        ev <- getEvent window (Just timeout)
+        case lookup ev handlers of
             Nothing -> loop
-            Just ev' ->
-                case lookup ev' handlers of
-                    Nothing -> loop
-                    Just handler -> return $ handler ev'
+            Just handler -> return $ handler $ fromMaybe (EventUnknown 0) ev
 
 waitFor :: Window -> (Event -> Bool) -> Curses ()
 waitFor w p = loop where
@@ -142,6 +183,5 @@ waitFor w p = loop where
 
 (//) = divInteger
 
-round_ :: Double -> Int -> Double
-round_ x n = (fromIntegral . floor $ x * f) / f
-  where f = 10^n
+decimalTrunc :: Int -> String -> String
+decimalTrunc digits = (\(x,y) -> x ++ take (digits+1) y) . break ('.'==)
