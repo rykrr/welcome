@@ -94,29 +94,49 @@ welcomeScreen window = loop
         accentColour <- newColorID ColorBlack ColorYellow 3
         accentColour' <- newColorID ColorWhite ColorYellow 4
 
-        updateWindow window $ do
+        (height, width) <- screenSize
+        let halfHeight = height // 2
+
+        topWindow <- newWindow halfHeight width 0 0
+        botWindow <- newWindow (height - halfHeight) width halfHeight 0
+
+        updateWindow topWindow $ do
             (height, width) <- windowSize
-            let halfHeight = height // 2
 
             setColor normalColour
-            fillBg width [0..halfHeight-1]
+            fillBg width [0..height-1]
+            --drawBorder Nothing Nothing Nothing (Just blank) Nothing Nothing verti verti
+
             printText baseWidth baseHeight infoLines
 
-            setColor accentColour
-            fillBg width [halfHeight..height-1]
-            printText baseWidth (halfHeight+1) addrLines
+        updateWindow botWindow $ do
+            (height, width) <- windowSize
 
-            moveCursor (height-bottomOffset) bottomOffset
+            setColor accentColour'
+            fillBg width [0..height-1]
+
+            setColor accentColour
+            printText baseWidth 1 addrLines
+
+            moveCursor (height-2) bottomOffset
             drawString "<F2> Settings"
 
             let powerstr = "<F12> Restart"
-            moveCursor (height-bottomOffset) (width - ((toInteger $ length powerstr) + 2))
+            moveCursor (height-2) (width - ((toInteger $ length powerstr) + bottomOffset))
             drawString powerstr
-            drawSplitBox normalColour accentColour'
+
+        updateWindow window $ do
+            drawBox Nothing Nothing
+            overlay botWindow OverlayReplace
+            overlay topWindow OverlayReplace
 
         render
 
+    drawGlyphAt y x glyph = moveCursor y x >> drawGlyph glyph
+
     blank = Glyph ' ' []
+    verti = Just glyphLineV
+    horiz = Just glyphLineH
 
     formatIssue :: Text -> [Interface] -> [Text]
     formatIssue text interfaces = do
